@@ -76,6 +76,13 @@ namespace LightningAnimation
                         Metadata.z++; // Increment loop count
                         TimeData.x = math.fmod(TimeData.x, TimeData.y);
                         TimeData.w = TimeData.x / TimeData.y;
+                        
+                        // Reset the playable time for smooth looping
+                        if (Playable.IsValid())
+                        {
+                            Playable.SetTime(TimeData.x);
+                        }
+                        
                         OnLoop?.Invoke();
                         
                         // Check max loops
@@ -103,9 +110,10 @@ namespace LightningAnimation
         {
             if (IsFadingIn || IsFadingOut)
             {
-                float blendDelta = WeightData.z * deltaTime;
-                //WeightData.x = math.movetowards(WeightData.x, WeightData.y, blendDelta); // please check this as i was getting errors movetowards unable to resolve symbols
-                WeightData.x = math.lerp(WeightData.x, WeightData.y, blendDelta);
+                // More accurate MoveTowards implementation:
+                float delta = WeightData.y - WeightData.x;
+                float maxDelta = WeightData.z * deltaTime;
+                WeightData.x += math.clamp(delta, -maxDelta, maxDelta);
                 
                 // Clear fade flags when target reached
                 if (math.abs(WeightData.x - WeightData.y) < AnimationConstants.MIN_WEIGHT_THRESHOLD)
