@@ -87,16 +87,26 @@ namespace LightningAnimation
         /// </summary>
         public void Return(AnimationClipPlayable playable, int clipID)
         {
+            // FIX #3: Check validity before operations
             if (!playable.IsValid())
                 return;
 
-            // Reset state before returning to pool
-            playable.SetTime(0);
-            playable.SetDone(false);
-            playable.SetSpeed(1f);
+            // Note: We're now destroying playables in FreeSlot to prevent latching
+            // So this method may not be called as often
             
-            // No need to manually disconnect - Unity handles this when reconnecting
-            // The playable will be automatically disconnected when a new one is connected to the same mixer input
+            // Reset state before returning to pool
+            try
+            {
+                playable.SetTime(0);
+                playable.SetDone(false);
+                playable.SetSpeed(1f);
+                playable.SetDuration(double.MaxValue);
+            }
+            catch
+            {
+                // Playable might be invalid or destroyed
+                return;
+            }
 
             // Return to pool if not at capacity
             if (!pools.TryGetValue(clipID, out var pool))
@@ -116,7 +126,8 @@ namespace LightningAnimation
             else
             {
                 // Pool is full, destroy the playable
-                playable.Destroy();
+                if (playable.IsValid())
+                    playable.Destroy();
                 totalRentedCount = System.Math.Max(0, totalRentedCount - 1);
             }
         }

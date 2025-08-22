@@ -31,6 +31,7 @@ namespace LightningAnimation
         {
             TimeData = new float4(0f, clip.length, 1f, 0f);
             WeightData = new float4(1f, 1f, AnimationConstants.DEFAULT_BLEND_SPEED, 0f);
+            // FIX #1: Initialize loop count to 0, not included in initial play
             Metadata = new int4(clipID, version, 0, (int)AnimationFlags.Initialized);
             References = new int4(playableIndex, -1, -1, 0);
             
@@ -71,7 +72,11 @@ namespace LightningAnimation
             {
                 // Reached target
                 WeightData.x = WeightData.y;
-                SetFlag(AnimationFlags.FadingIn | AnimationFlags.FadingOut, false);
+                // FIX #5: Clear fade flags properly
+                if (IsFadingIn)
+                    SetFlag(AnimationFlags.FadingIn, false);
+                if (IsFadingOut)
+                    SetFlag(AnimationFlags.FadingOut, false);
             }
             else
             {
@@ -79,7 +84,7 @@ namespace LightningAnimation
                 WeightData.x += math.sign(delta) * maxDelta;
             }
             
-            // Clamp to valid range
+            // FIX #5: Ensure weight is always clamped to [0,1]
             WeightData.x = math.saturate(WeightData.x);
         }
         
