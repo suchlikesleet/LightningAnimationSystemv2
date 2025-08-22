@@ -224,8 +224,9 @@ namespace LightningAnimation
                 clipName = clip.name;
             }
             
-            // Fire completion callback if not interrupted
-            if (!wasInterrupted && state.OnComplete != null)
+            // Fire completion callback if not interrupted and the animation hasn’t already finished.
+            // This prevents OnComplete from firing twice when auto-stop is enabled.
+            if (!wasInterrupted && state.OnComplete != null && state.IsPlaying)
             {
                 state.OnComplete.Invoke();
             }
