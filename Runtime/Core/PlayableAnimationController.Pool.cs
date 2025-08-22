@@ -6,7 +6,7 @@ using UnityEngine.Playables;
 namespace LightningAnimation
 {
     /// <summary>
-    /// Efficient pooling system for AnimationClipPlayables
+    /// Efficient pooling system for AnimationClipPlayables - FIXED VERSION
     /// Reduces allocation overhead by reusing playables
     /// </summary>
     internal class PlayablePool
@@ -35,7 +35,7 @@ namespace LightningAnimation
         #region Pool Operations
         
         /// <summary>
-        /// Rent a playable from the pool
+        /// Rent a playable from the pool - FIXED
         /// </summary>
         public AnimationClipPlayable Rent(AnimationClip clip)
         {
@@ -55,23 +55,27 @@ namespace LightningAnimation
             AnimationClipPlayable playable;
             
             // Try to get from pool
-            if (pool.Count > 0)
+            while (pool.Count > 0)
             {
                 playable = pool.Pop();
                 totalPooledCount--;
                 
-                // Reset playable state
+                // Validate playable before returning
                 if (playable.IsValid())
                 {
+                    // Reset playable state
                     playable.SetTime(0);
                     playable.SetDone(false);
                     playable.SetSpeed(1f);
+                    playable.SetDuration(clip.length);
+                    
                     totalRentedCount++;
                     return playable;
                 }
+                // If invalid, continue to next or create new
             }
             
-            // Create new if pool is empty
+            // Create new if pool is empty or all were invalid
             playable = AnimationClipPlayable.Create(graph, clip);
             totalRentedCount++;
             
@@ -79,89 +83,43 @@ namespace LightningAnimation
         }
         
         /// <summary>
-        /// Return a playable to the pool
+        /// Return a playable to the pool - FIXED
         /// </summary>
-        /*public void Return(AnimationClipPlayable playable, int clipID)
-        {
-            if (!playable.IsValid())
-                return;
-            
-            // Reset state
-            playable.SetTime(0);
-            playable.SetDone(false);
-            playable.SetSpeed(1f);
-            
-            // Disconnect from graph
-            /*if (graph.IsValid())
-            {
-                for (int i = 0; i < playable.GetOutputCount(); i++)
-                {
-                    if (playable.GetOutput(i).IsOutputValid())
-                        graph.Disconnect(playable, i);
-                }
-            } #1#// proposed by claude with errors
-            
-            if (graph.IsValid())
-            {
-                // Proper way to disconnect playable outputs
-                var playableOutput = playable.GetOutput(0);
-                if (playableOutput.IsOutputValid())
-                {
-                    playableOutput.SetSourcePlayable(Playable.Null);
-                }
-            }
-            
-            /*if (graph.IsValid())
-            {
-                for (int i = playable.GetOutputCount() - 1; i >= 0; i--)
-                    graph.Disconnect(playable, i);
-            } //proposed by ChatGPT#1#
-            
-            // Return to pool if not at capacity
-            if (pools.TryGetValue(clipID, out var pool))
-            {
-                if (pool.Count < maxPoolSizePerClip)
-                {
-                    pool.Push(playable);
-                    totalPooledCount++;
-                    totalRentedCount--;
-                    return;
-                }
-            }
-            
-            // Destroy if pool is full
-            playable.Destroy();
-            totalRentedCount--;
-        }*/
-        
         public void Return(AnimationClipPlayable playable, int clipID)
         {
             if (!playable.IsValid())
                 return;
 
-            // Reset state
+            // Reset state before returning to pool
             playable.SetTime(0);
             playable.SetDone(false);
             playable.SetSpeed(1f);
+            
+            // No need to manually disconnect - Unity handles this when reconnecting
+            // The playable will be automatically disconnected when a new one is connected to the same mixer input
 
-            // No need for manual disconnection - Unity handles this
-            // Just return to pool if not at capacity
-            if (pools.TryGetValue(clipID, out var pool))
+            // Return to pool if not at capacity
+            if (!pools.TryGetValue(clipID, out var pool))
             {
-                if (pool.Count < maxPoolSizePerClip)
-                {
-                    pool.Push(playable);
-                    totalPooledCount++;
-                    totalRentedCount--;
-                    return;
-                }
+                pool = new Stack<AnimationClipPlayable>(maxPoolSizePerClip);
+                pools[clipID] = pool;
+                poolSizes[clipID] = 0;
             }
-
-            // Destroy if pool is full
-            playable.Destroy();
-            totalRentedCount--;
+            
+            if (pool.Count < maxPoolSizePerClip)
+            {
+                pool.Push(playable);
+                totalPooledCount++;
+                totalRentedCount = System.Math.Max(0, totalRentedCount - 1);
+                poolSizes[clipID] = pool.Count;
+            }
+            else
+            {
+                // Pool is full, destroy the playable
+                playable.Destroy();
+                totalRentedCount = System.Math.Max(0, totalRentedCount - 1);
+            }
         }
-
         
         /// <summary>
         /// Prewarm pool with instances for a clip
@@ -189,6 +147,11 @@ namespace LightningAnimation
                 var playable = AnimationClipPlayable.Create(graph, clip);
                 if (playable.IsValid())
                 {
+                    // Reset to default state
+                    playable.SetTime(0);
+                    playable.SetDone(false);
+                    playable.SetSpeed(1f);
+                    
                     pool.Push(playable);
                     totalPooledCount++;
                 }
@@ -255,6 +218,7 @@ namespace LightningAnimation
                 
                 // Keep only half of pooled instances
                 int targetSize = pool.Count / 2;
+                targetSize = UnityEngine.Mathf.Max(1, targetSize); // Keep at least 1
                 
                 while (pool.Count > targetSize)
                 {
@@ -295,9 +259,14 @@ namespace LightningAnimation
             public int PoolCount;
             public int TotalCapacity;
             
+            public float UtilizationRate => TotalCapacity > 0 ? 
+                (float)TotalRented / TotalCapacity : 0f;
+            
             public override string ToString()
             {
-                return $"Pooled:{TotalPooled} Rented:{TotalRented} Pools:{PoolCount} Capacity:{TotalCapacity}";
+                return $"Pooled:{TotalPooled} Rented:{TotalRented} " +
+                       $"Pools:{PoolCount} Capacity:{TotalCapacity} " +
+                       $"Utilization:{UtilizationRate:P}";
             }
         }
         
@@ -322,9 +291,23 @@ namespace LightningAnimation
         /// </summary>
         public bool ShouldTrim()
         {
-            // Trim if we have more than 50% capacity unused
-            float utilization = (float)totalRentedCount / (totalPooledCount + totalRentedCount + 1);
+            // Trim if we have more than 50% capacity unused and significant pooled count
+            if (totalPooledCount + totalRentedCount == 0)
+                return false;
+                
+            float utilization = (float)totalRentedCount / (totalPooledCount + totalRentedCount);
             return utilization < 0.5f && totalPooledCount > 4;
+        }
+        
+        /// <summary>
+        /// Perform automatic memory management
+        /// </summary>
+        public void AutoManage()
+        {
+            if (ShouldTrim())
+            {
+                TrimExcess();
+            }
         }
         
         #endregion

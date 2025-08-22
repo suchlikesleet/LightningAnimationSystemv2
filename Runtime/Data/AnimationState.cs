@@ -7,7 +7,7 @@ using UnityEngine.Playables;
 namespace LightningAnimation
 {
     /// <summary>
-    /// SIMD-friendly animation state structure
+    /// SIMD-friendly animation state structure - FIXED VERSION
     /// Uses float4/int4 for efficient batch processing
     /// </summary>
     [Serializable]
@@ -30,10 +30,11 @@ namespace LightningAnimation
         public void Initialize(AnimationClip clip, int clipID, int version, int playableIndex)
         {
             TimeData = new float4(0f, clip.length, 1f, 0f);
-            WeightData = new float4(0f, 1f, AnimationConstants.DEFAULT_BLEND_SPEED, 0f);
+            WeightData = new float4(1f, 1f, AnimationConstants.DEFAULT_BLEND_SPEED, 0f);
             Metadata = new int4(clipID, version, 0, (int)AnimationFlags.Initialized);
             References = new int4(playableIndex, -1, -1, 0);
             
+            Playable = default(AnimationClipPlayable);
             OnComplete = null;
             OnLoop = null;
         }
@@ -44,84 +45,42 @@ namespace LightningAnimation
         public void Reset()
         {
             TimeData = float4.zero;
-            WeightData = new float4(0f, 1f, AnimationConstants.DEFAULT_BLEND_SPEED, 0f);
-            Metadata.z = 0; // Reset loop count
-            Metadata.w = (int)AnimationFlags.None; // Clear flags
-            References.y = -1; // Reset max loops
+            WeightData = float4.zero;
+            Metadata = int4.zero;
+            References = new int4(-1, -1, -1, 0);
             
+            Playable = default(AnimationClipPlayable);
             OnComplete = null;
             OnLoop = null;
         }
         
         /// <summary>
-        /// Update time with SIMD-friendly operations
-        /// </summary>
-        public void UpdateTime(float deltaTime)
-        {
-            if (!IsPlaying || IsPaused) return;
-            
-            // SIMD-friendly time update
-            TimeData.x = math.mad(deltaTime, TimeData.z, TimeData.x); // time += delta * speed
-            
-            // Update normalized time
-            if (TimeData.y > 0)
-            {
-                TimeData.w = TimeData.x / TimeData.y;
-                
-                // Handle looping
-                if (TimeData.w >= 1f)
-                {
-                    if (IsLooping)
-                    {
-                        Metadata.z++; // Increment loop count
-                        TimeData.x = math.fmod(TimeData.x, TimeData.y);
-                        TimeData.w = TimeData.x / TimeData.y;
-                        
-                        // Reset the playable time for smooth looping
-                        if (Playable.IsValid())
-                        {
-                            Playable.SetTime(TimeData.x);
-                        }
-                        
-                        OnLoop?.Invoke();
-                        
-                        // Check max loops
-                        if (References.y > 0 && Metadata.z >= References.y)
-                        {
-                            SetFlag(AnimationFlags.Playing, false);
-                            OnComplete?.Invoke();
-                        }
-                    }
-                    else
-                    {
-                        TimeData.x = TimeData.y;
-                        TimeData.w = 1f;
-                        SetFlag(AnimationFlags.Playing, false);
-                        OnComplete?.Invoke();
-                    }
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Update weight with blending
+        /// Update weight with blending - FIXED
         /// </summary>
         public void UpdateWeight(float deltaTime)
         {
-            if (IsFadingIn || IsFadingOut)
-            {
-                // More accurate MoveTowards implementation:
-                float delta = WeightData.y - WeightData.x;
-                float maxDelta = WeightData.z * deltaTime;
-                WeightData.x += math.clamp(delta, -maxDelta, maxDelta);
+            if (!IsFadingIn && !IsFadingOut)
+                return;
                 
-                // Clear fade flags when target reached
-                if (math.abs(WeightData.x - WeightData.y) < AnimationConstants.MIN_WEIGHT_THRESHOLD)
-                {
-                    WeightData.x = WeightData.y;
-                    SetFlag(AnimationFlags.FadingIn | AnimationFlags.FadingOut, false);
-                }
+            // Calculate weight change
+            float delta = WeightData.y - WeightData.x;
+            float maxDelta = WeightData.z * deltaTime;
+            
+            // Apply weight change
+            if (math.abs(delta) <= maxDelta)
+            {
+                // Reached target
+                WeightData.x = WeightData.y;
+                SetFlag(AnimationFlags.FadingIn | AnimationFlags.FadingOut, false);
             }
+            else
+            {
+                // Move towards target
+                WeightData.x += math.sign(delta) * maxDelta;
+            }
+            
+            // Clamp to valid range
+            WeightData.x = math.saturate(WeightData.x);
         }
         
         #region Flag Operations (Optimized bit operations)
@@ -188,8 +147,19 @@ namespace LightningAnimation
         
         public int ClipID => Metadata.x;
         public int Version => Metadata.y;
-        public int LoopCount => Metadata.z;
-        public int PlayableIndex => References.x;
+        
+        public int LoopCount
+        {
+            get => Metadata.z;
+            set => Metadata.z = value;
+        }
+        
+        public int PlayableIndex
+        {
+            get => References.x;
+            set => References.x = value;
+        }
+        
         public int MaxLoops
         {
             get => References.y;
@@ -199,23 +169,23 @@ namespace LightningAnimation
         #endregion
         
         /// <summary>
-        /// Prepare for fade in
+        /// Prepare for fade in - FIXED
         /// </summary>
         public void StartFadeIn(float duration)
         {
-            WeightData.x = 0f;
-            WeightData.y = 1f;
+            WeightData.x = 0f;  // Start from 0
+            WeightData.y = 1f;  // Target weight
             WeightData.z = duration > 0 ? 1f / duration : float.MaxValue;
             SetFlag(AnimationFlags.FadingIn, true);
             SetFlag(AnimationFlags.FadingOut, false);
         }
         
         /// <summary>
-        /// Prepare for fade out
+        /// Prepare for fade out - FIXED
         /// </summary>
         public void StartFadeOut(float duration)
         {
-            WeightData.y = 0f;
+            WeightData.y = 0f;  // Target weight
             WeightData.z = duration > 0 ? 1f / duration : float.MaxValue;
             SetFlag(AnimationFlags.FadingOut, true);
             SetFlag(AnimationFlags.FadingIn, false);
@@ -224,7 +194,7 @@ namespace LightningAnimation
         /// <summary>
         /// Check if state is valid
         /// </summary>
-        public bool IsValid => IsInitialized && Metadata.x != 0;
+        public bool IsValid => Metadata.x != 0;  // Has clip ID
     }
     
     /// <summary>
@@ -234,8 +204,9 @@ namespace LightningAnimation
     {
         /// <summary>
         /// Update multiple states in batch (SIMD optimized)
+        /// Note: Time update is now handled in the main controller for better loop control
         /// </summary>
-        public static void BatchUpdateTime(ref AnimationState[] states, int count, float deltaTime)
+        public static void BatchUpdateWeights(ref AnimationState[] states, int count, float deltaTime)
         {
             // Process 4 states at once with SIMD
             int batchCount = count / 4;
@@ -244,52 +215,49 @@ namespace LightningAnimation
             {
                 int i = batch * 4;
                 
-                // Load time data for 4 animations
-                float4 times = new float4(
-                    states[i].TimeData.x,
-                    states[i + 1].TimeData.x,
-                    states[i + 2].TimeData.x,
-                    states[i + 3].TimeData.x
+                // Load weight data for 4 animations
+                float4 weights = new float4(
+                    states[i].WeightData.x,
+                    states[i + 1].WeightData.x,
+                    states[i + 2].WeightData.x,
+                    states[i + 3].WeightData.x
+                );
+                
+                float4 targets = new float4(
+                    states[i].WeightData.y,
+                    states[i + 1].WeightData.y,
+                    states[i + 2].WeightData.y,
+                    states[i + 3].WeightData.y
                 );
                 
                 float4 speeds = new float4(
-                    states[i].TimeData.z,
-                    states[i + 1].TimeData.z,
-                    states[i + 2].TimeData.z,
-                    states[i + 3].TimeData.z
+                    states[i].WeightData.z,
+                    states[i + 1].WeightData.z,
+                    states[i + 2].WeightData.z,
+                    states[i + 3].WeightData.z
                 );
                 
-                // SIMD multiply-add
-                times = math.mad(speeds, deltaTime, times);
+                // Calculate weight changes
+                float4 delta = targets - weights;
+                float4 maxDelta = speeds * deltaTime;
+                float4 absDelta = math.abs(delta);
+                float4 sign = math.sign(delta);
+                
+                // Apply changes
+                float4 change = math.min(absDelta, maxDelta) * sign;
+                weights = math.saturate(weights + change);
                 
                 // Write back
-                states[i].TimeData.x = times.x;
-                states[i + 1].TimeData.x = times.y;
-                states[i + 2].TimeData.x = times.z;
-                states[i + 3].TimeData.x = times.w;
+                states[i].WeightData.x = weights.x;
+                states[i + 1].WeightData.x = weights.y;
+                states[i + 2].WeightData.x = weights.z;
+                states[i + 3].WeightData.x = weights.w;
             }
             
             // Handle remaining states
             for (int i = batchCount * 4; i < count; i++)
             {
-                states[i].UpdateTime(deltaTime);
-            }
-        }
-        
-        /// <summary>
-        /// Update weights in batch (SIMD optimized)
-        /// </summary>
-        public static void BatchUpdateWeights(ref AnimationState[] states, int count, float deltaTime)
-        {
-            for (int i = 0; i < count; i += 4)
-            {
-                int remaining = math.min(4, count - i);
-                
-                // Process up to 4 weights at once
-                for (int j = 0; j < remaining; j++)
-                {
-                    states[i + j].UpdateWeight(deltaTime);
-                }
+                states[i].UpdateWeight(deltaTime);
             }
         }
     }

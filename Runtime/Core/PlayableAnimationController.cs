@@ -9,7 +9,7 @@ namespace LightningAnimation
 {
     /// <summary>
     /// High-performance animation controller using Playables API
-    /// Core functionality and initialization
+    /// Core functionality and initialization - FIXED VERSION
     /// </summary>
     [RequireComponent(typeof(Animator))]
     [AddComponentMenu("Lightning Animation/Playable Animation Controller")]
@@ -51,11 +51,10 @@ namespace LightningAnimation
         private int nextVersion = 1;
         
         // Fast lookups using clip instance IDs
-        private Dictionary<int, int> clipIDToSlot;
         private Dictionary<int, AnimationClipPlayable> clipIDToPlayable;
         
-        // Slot management
-        private byte slotOccupancy = 0; // Bit mask for 8 slots
+        // Slot management - FIXED: Simplified slot management
+        private bool[] slotInUse;
         private Queue<AnimationHandle> animationQueue;
         
         // Graph state
@@ -85,7 +84,11 @@ namespace LightningAnimation
         public bool IsGraphInitialized => graphInitialized;
         public bool IsGraphPaused => graphPaused;
         public int ActiveAnimationCount => activeStateCount;
-        public float GlobalSpeed => globalSpeed;
+        public float GlobalSpeed 
+        { 
+            get => globalSpeed;
+            set => SetGlobalSpeed(value);
+        }
         
         #endregion
         
@@ -142,12 +145,22 @@ namespace LightningAnimation
                 return;
             }
             
+            // IMPORTANT: Animator doesn't need a controller!
+            animator.runtimeAnimatorController = null;
+            
             // Initialize fixed arrays
             states = new AnimationState[AnimationConstants.MAX_SLOTS];
-            clipIDToSlot = new Dictionary<int, int>(AnimationConstants.MAX_SLOTS);
+            slotInUse = new bool[AnimationConstants.MAX_SLOTS];
             clipIDToPlayable = new Dictionary<int, AnimationClipPlayable>(AnimationConstants.MAX_UNIQUE_CLIPS);
             clipIDToClip = new Dictionary<int, AnimationClip>(AnimationConstants.MAX_UNIQUE_CLIPS);
             animationQueue = new Queue<AnimationHandle>(AnimationConstants.MAX_SLOTS);
+            
+            // Initialize all states
+            for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
+            {
+                states[i] = new AnimationState();
+                states[i].PlayableIndex = i; // Pre-assign mixer indices
+            }
             
             // Create playable graph
             InitializePlayableGraph();
@@ -233,6 +246,9 @@ namespace LightningAnimation
                 states[i].OnLoop = null;
             }
             
+            // Clear pool
+            playablePool?.ClearAll();
+            
             // Destroy playables
             foreach (var playable in clipIDToPlayable.Values)
             {
@@ -248,7 +264,6 @@ namespace LightningAnimation
             }
             
             // Clear collections
-            clipIDToSlot?.Clear();
             clipIDToPlayable?.Clear();
             clipIDToClip?.Clear();
             animationQueue?.Clear();
@@ -291,78 +306,47 @@ namespace LightningAnimation
         {
             globalSpeed = math.max(0f, speed);
             
-            if (graphInitialized)
+            // Update all active animations
+            for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
             {
-                playableGraph.GetRootPlayable(0).SetSpeed(globalSpeed);
+                if (states[i].IsPlaying && states[i].Playable.IsValid())
+                {
+                    states[i].Playable.SetSpeed(states[i].Speed * globalSpeed);
+                }
             }
         }
         
         #endregion
         
-        #region Slot Management
+        #region Slot Management - FIXED
         
         /// <summary>
-        /// Get or assign a slot for the given clip
+        /// Get a free slot for animation - SIMPLIFIED
         /// </summary>
-        private int GetOrAssignSlot(int clipID)
+        private int GetFreeSlot()
         {
-            // Check if already assigned
-            if (clipIDToSlot.TryGetValue(clipID, out int existingSlot))
+            for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
             {
-                if (existingSlot >= 0 && existingSlot < AnimationConstants.MAX_SLOTS)
-                    return existingSlot;
+                if (!slotInUse[i])
+                {
+                    slotInUse[i] = true;
+                    return i;
+                }
             }
             
-            // Find free slot using bit operations (super fast)
-            int freeSlot = GetFreeSlot();
-            if (freeSlot >= 0)
-            {
-                clipIDToSlot[clipID] = freeSlot;
-                SetSlotOccupied(freeSlot, true);
-                return freeSlot;
-            }
-            
-            // No free slots - try to free the oldest
+            // No free slot - find oldest completed animation
             for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
             {
                 if (!states[i].IsPlaying)
                 {
                     FreeSlot(i);
-                    clipIDToSlot[clipID] = i;
-                    SetSlotOccupied(i, true);
+                    slotInUse[i] = true;
                     return i;
                 }
             }
             
             DebugLog("No available slots!");
             return AnimationConstants.INVALID_SLOT;
-        }
-        
-        /// <summary>
-        /// Find free slot using bit manipulation (branchless)
-        /// </summary>
-        private int GetFreeSlot()
-        {
-            byte freeMask = (byte)(~slotOccupancy & 0xFF);
-            if (freeMask == 0) return AnimationConstants.INVALID_SLOT;
-            
-            // Count trailing zeros to find first free slot
-            int slot = 0;
-            while ((freeMask & 1) == 0 && slot < AnimationConstants.MAX_SLOTS)
-            {
-                freeMask >>= 1;
-                slot++;
-            }
-            
-            return slot < AnimationConstants.MAX_SLOTS ? slot : AnimationConstants.INVALID_SLOT;
-        }
-        
-        private void SetSlotOccupied(int slot, bool occupied)
-        {
-            if (occupied)
-                slotOccupancy |= (byte)(1 << slot);
-            else
-                slotOccupancy &= (byte)~(1 << slot);
         }
         
         private void FreeSlot(int slot)
@@ -372,21 +356,31 @@ namespace LightningAnimation
                 
             ref var state = ref states[slot];
             
-            // Disconnect from mixer
-            if (state.PlayableIndex >= 0)
+            // FIX #3: Proper disconnection from mixer
+            if (mixerPlayable.IsValid() && slot < mixerPlayable.GetInputCount())
             {
-                mixerPlayable.SetInputWeight(state.PlayableIndex, 0f);
+                var input = mixerPlayable.GetInput(slot);
+                if (input.IsValid())
+                {
+                    // Disconnect the input
+                    playableGraph.Disconnect(mixerPlayable, slot);
+                    
+                    // Destroy the subgraph to prevent latching
+                    if (state.Playable.IsValid())
+                    {
+                        playableGraph.DestroySubgraph(state.Playable);
+                    }
+                }
+                // Clear weight
+                mixerPlayable.SetInputWeight(slot, 0f);
             }
+            
+            // Return playable to pool if valid (only if not destroyed)
+            // Note: We destroyed it above, so skip pool return
             
             // Clear state
             state.Reset();
-            SetSlotOccupied(slot, false);
-            
-            // Remove from clip mapping
-            if (state.ClipID != 0)
-            {
-                clipIDToSlot.Remove(state.ClipID);
-            }
+            slotInUse[slot] = false;
         }
         
         #endregion

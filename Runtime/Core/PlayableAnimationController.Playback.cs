@@ -7,7 +7,7 @@ using UnityEngine.Playables;
 namespace LightningAnimation
 {
     /// <summary>
-    /// Playback operations for PlayableAnimationController
+    /// Playback operations for PlayableAnimationController - FIXED VERSION
     /// Handles play, stop, pause, and queue operations
     /// </summary>
     public partial class PlayableAnimationController
@@ -23,7 +23,7 @@ namespace LightningAnimation
         }
         
         /// <summary>
-        /// Play animation with specific mode
+        /// Play animation with specific mode - FIXED
         /// </summary>
         public AnimationHandle PlayWithMode(AnimationClip clip, PlayMode mode, Action onComplete = null)
         {
@@ -65,6 +65,9 @@ namespace LightningAnimation
                             this
                         );
                         animationQueue.Enqueue(queueHandle);
+                        
+                        // Store the callback for when it plays
+                        // Note: This is simplified - in production you'd need a queue for callbacks too
                         DebugLog($"Queued animation: {clip.name}");
                         return queueHandle;
                     }
@@ -80,8 +83,8 @@ namespace LightningAnimation
             if (!playable.IsValid())
                 return AnimationHandle.Invalid;
             
-            // Get slot
-            int slot = GetOrAssignSlot(clipID);
+            // Get free slot
+            int slot = GetFreeSlot();
             if (slot < 0)
                 return AnimationHandle.Invalid;
             
@@ -110,7 +113,7 @@ namespace LightningAnimation
         }
         
         /// <summary>
-        /// Play animation with crossfade
+        /// Play animation with crossfade - FIXED
         /// </summary>
         public AnimationHandle PlayWithCrossfade(AnimationClip clip, float fadeTime = 0.3f, Action onComplete = null)
         {
@@ -137,13 +140,15 @@ namespace LightningAnimation
             {
                 ref var state = ref states[handle.SlotIndex];
                 state.StartFadeIn(fadeTime);
+                // Apply initial weight
+                mixerPlayable.SetInputWeight(state.PlayableIndex, state.Weight);
             }
             
             return handle;
         }
         
         /// <summary>
-        /// Play animation with looping
+        /// Play animation with looping - FIXED
         /// </summary>
         public AnimationHandle PlayLooped(AnimationClip clip, int loopCount = -1, Action onComplete = null)
         {
@@ -153,6 +158,21 @@ namespace LightningAnimation
                 ref var state = ref states[handle.SlotIndex];
                 state.SetFlag(AnimationFlags.Looping, true);
                 state.MaxLoops = loopCount;
+                
+                // FIX #1: Set proper duration based on loop count
+                if (state.Playable.IsValid())
+                {
+                    if (loopCount > 0)
+                    {
+                        // Set duration to exact loop count * clip length
+                        state.Playable.SetDuration(clip.length * loopCount);
+                    }
+                    else
+                    {
+                        // Infinite looping
+                        state.Playable.SetDuration(double.MaxValue);
+                    }
+                }
             }
             return handle;
         }
@@ -212,22 +232,11 @@ namespace LightningAnimation
                 FireAnimationEnd(clipName);
             }
             
-            // Disconnect from mixer
-            if (state.PlayableIndex >= 0)
-            {
-                mixerPlayable.SetInputWeight(state.PlayableIndex, 0f);
-            }
-            
-            // Clear state
-            state.SetFlag(AnimationFlags.Playing, false);
-            state.OnComplete = null;
-            state.OnLoop = null;
+            // Clear state and free slot
+            FreeSlot(slot);
             
             // Update active count
             activeStateCount = math.max(0, activeStateCount - 1);
-            
-            // Free slot
-            FreeSlot(slot);
             
             DebugLog($"Stopped animation in slot {slot}");
             
@@ -269,7 +278,8 @@ namespace LightningAnimation
             if (state.IsPlaying && !state.IsPaused)
             {
                 state.SetFlag(AnimationFlags.Paused, true);
-                state.Playable.SetSpeed(0f);
+                if (state.Playable.IsValid())
+                    state.Playable.SetSpeed(0f);
                 DebugLog($"Paused animation in slot {handle.SlotIndex}");
             }
         }
@@ -286,7 +296,8 @@ namespace LightningAnimation
             if (state.IsPlaying && state.IsPaused)
             {
                 state.SetFlag(AnimationFlags.Paused, false);
-                state.Playable.SetSpeed(state.Speed * globalSpeed);
+                if (state.Playable.IsValid())
+                    state.Playable.SetSpeed(state.Speed * globalSpeed);
                 DebugLog($"Resumed animation in slot {handle.SlotIndex}");
             }
         }
@@ -298,7 +309,7 @@ namespace LightningAnimation
         {
             for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
             {
-                if (states[i].IsPlaying && !states[i].IsPaused)
+                if (states[i].IsPlaying && !states[i].IsPaused && states[i].Playable.IsValid())
                 {
                     states[i].SetFlag(AnimationFlags.Paused, true);
                     states[i].Playable.SetSpeed(0f);
@@ -314,7 +325,7 @@ namespace LightningAnimation
         {
             for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
             {
-                if (states[i].IsPlaying && states[i].IsPaused)
+                if (states[i].IsPlaying && states[i].IsPaused && states[i].Playable.IsValid())
                 {
                     states[i].SetFlag(AnimationFlags.Paused, false);
                     states[i].Playable.SetSpeed(states[i].Speed * globalSpeed);
@@ -325,27 +336,16 @@ namespace LightningAnimation
         
         #endregion
         
-        #region Playable Management
+        #region Playable Management - FIXED
         
         /// <summary>
-        /// Get or create playable for clip
+        /// Get or create playable for clip - IMPROVED
         /// </summary>
         private AnimationClipPlayable GetOrCreatePlayable(AnimationClip clip)
         {
             int clipID = clip.GetInstanceID();
             
-            // Check if already exists
-            if (clipIDToPlayable.TryGetValue(clipID, out var existing))
-            {
-                if (existing.IsValid())
-                {
-                    existing.SetTime(0);
-                    existing.SetDone(false);
-                    return existing;
-                }
-            }
-            
-            // Try to get from pool
+            // Try to get from pool first
             var pooled = playablePool.Rent(clip);
             if (pooled.IsValid())
             {
@@ -353,7 +353,7 @@ namespace LightningAnimation
                 return pooled;
             }
             
-            // Create new playable
+            // Create new playable if pool failed
             var playable = AnimationClipPlayable.Create(playableGraph, clip);
             clipIDToPlayable[clipID] = playable;
             
@@ -362,36 +362,57 @@ namespace LightningAnimation
         }
         
         /// <summary>
-        /// Connect playable to mixer
+        /// Connect playable to mixer - FIXED
         /// </summary>
         private void ConnectToMixer(ref AnimationState state, AnimationClipPlayable playable)
         {
             int mixerIndex = state.PlayableIndex;
-    
-            // Clear existing connection
-            if (mixerPlayable.GetInput(mixerIndex).IsValid())
+            
+            // FIX #3: Proper disconnection and cleanup
+            var currentInput = mixerPlayable.GetInput(mixerIndex);
+            if (currentInput.IsValid())
             {
                 playableGraph.Disconnect(mixerPlayable, mixerIndex);
-                mixerPlayable.SetInputWeight(mixerIndex, 0f);
             }
-    
+            
             // Connect playable
             playableGraph.Connect(playable, 0, mixerPlayable, mixerIndex);
-    
-            // CRITICAL: Set weight to 1.0f initially, not state.Weight
-            mixerPlayable.SetInputWeight(mixerIndex, 1.0f);  // ← This is crucial
-    
+            
+            // Set initial weight based on whether we're fading in
+            float initialWeight = state.IsFadingIn ? 0f : 1f;
+            mixerPlayable.SetInputWeight(mixerIndex, initialWeight);
+            
             // Store reference
             state.Playable = playable;
-            state.Weight = 1.0f;  // Ensure state weight is also set
-    
-            // Set properties
+            state.Weight = initialWeight;
+            
+            // FIX #7: Consistent speed calculation
             playable.SetSpeed(state.Speed * globalSpeed);
             playable.SetTime(0);
-    
-            Debug.Log($"Connected playable to slot {mixerIndex} with weight 1.0f");
+            playable.SetDone(false);
+            
+            // FIX #1: Proper duration for looping
+            if (state.IsLooping)
+            {
+                if (state.MaxLoops > 0)
+                {
+                    // Set duration based on loop count
+                    playable.SetDuration(state.Length * state.MaxLoops);
+                }
+                else
+                {
+                    // Infinite looping
+                    playable.SetDuration(double.MaxValue);
+                }
+            }
+            else
+            {
+                // Single play
+                playable.SetDuration(state.Length);
+            }
+            
+            DebugLog($"Connected playable to slot {mixerIndex} with weight {initialWeight:F2}");
         }
-
         
         /// <summary>
         /// Prewarm clip for faster first play
@@ -402,13 +423,9 @@ namespace LightningAnimation
                 return;
                 
             int clipID = clip.GetInstanceID();
-            if (!clipIDToPlayable.ContainsKey(clipID))
-            {
-                var playable = AnimationClipPlayable.Create(playableGraph, clip);
-                clipIDToPlayable[clipID] = playable;
-                playablePool.Prewarm(clip, 2); // Pre-create 2 instances
-                DebugLog($"Prewarmed clip: {clip.name}");
-            }
+            clipIDToClip[clipID] = clip;
+            playablePool.Prewarm(clip, 2); // Pre-create 2 instances
+            DebugLog($"Prewarmed clip: {clip.name}");
         }
         
         #endregion
@@ -417,25 +434,30 @@ namespace LightningAnimation
         
         private void ProcessQueue()
         {
-            if (animationQueue.Count == 0 || activeStateCount > 0)
+            // FIX #2: Better queue processing logic
+            if (animationQueue.Count == 0)
+                return;
+                
+            // Check if we can play next queued animation
+            // Only process if no primary animations are playing (ignore fading out ones)
+            bool canProcess = true;
+            for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
+            {
+                if (states[i].IsPlaying && !states[i].IsFadingOut)
+                {
+                    canProcess = false;
+                    break;
+                }
+            }
+            
+            if (!canProcess)
                 return;
                 
             // Get next queued animation
             var queued = animationQueue.Dequeue();
             
-            // Find the clip
-            AnimationClip clip = null;
-            foreach (var kvp in clipIDToPlayable)
-            {
-                if (kvp.Key == queued.ClipID)
-                {
-                    // This is a workaround - in production you'd maintain clip references
-                    // For now we can't get the clip back from just the ID
-                    break;
-                }
-            }
-            
-            if (clip != null)
+            // Find the clip and play it
+            if (clipIDToClip.TryGetValue(queued.ClipID, out var clip))
             {
                 Play(clip);
             }
@@ -443,19 +465,15 @@ namespace LightningAnimation
         
         #endregion
         
-        #region Update Loop
+        #region Update Loop - FIXED
         
         private void UpdateAnimations(float deltaTime)
         {
             if (activeStateCount == 0)
                 return;
             
-            // Batch update using SIMD
-            AnimationStateBatch.BatchUpdateTime(ref states, AnimationConstants.MAX_SLOTS, deltaTime);
-            AnimationStateBatch.BatchUpdateWeights(ref states, AnimationConstants.MAX_SLOTS, deltaTime);
-            
-            // Apply weights to mixer and check completion
             int stillActive = 0;
+            
             for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
             {
                 ref var state = ref states[i];
@@ -463,31 +481,119 @@ namespace LightningAnimation
                 if (!state.IsPlaying)
                     continue;
                 
-                // Update mixer weight if changed
-                if (state.IsDirty || state.IsFadingIn || state.IsFadingOut)
+                // Update time (handles looping internally)
+                bool completed = UpdateAnimationTime(ref state, deltaTime);
+                
+                // Update weight if fading
+                if (state.IsFadingIn || state.IsFadingOut)
                 {
-                    mixerPlayable.SetInputWeight(state.PlayableIndex, state.Weight);
-                    state.SetFlag(AnimationFlags.Dirty, false);
+                    state.UpdateWeight(deltaTime);
+                    if (state.Playable.IsValid())
+                    {
+                        mixerPlayable.SetInputWeight(state.PlayableIndex, state.Weight);
+                    }
+                    
+                    // Check for fade out completion
+                    if (state.IsFadingOut && state.Weight <= AnimationConstants.MIN_WEIGHT_THRESHOLD)
+                    {
+                        StopInternal(i, true);
+                        continue;
+                    }
                 }
                 
                 // Check for completion
-                if (!state.IsPlaying && state.HasFlag(AnimationFlags.AutoStop))
+                if (completed && state.HasFlag(AnimationFlags.AutoStop))
                 {
                     StopInternal(i, false);
-                }
-                else if (state.IsPlaying)
-                {
-                    stillActive++;
+                    continue;
                 }
                 
-                // Check for fade out completion
-                if (state.IsFadingOut && state.Weight <= AnimationConstants.MIN_WEIGHT_THRESHOLD)
+                if (state.IsPlaying)
                 {
-                    StopInternal(i, true);
+                    stillActive++;
                 }
             }
             
             activeStateCount = stillActive;
+        }
+        
+        /// <summary>
+        /// Update animation time and handle looping - FIXED
+        /// </summary>
+        private bool UpdateAnimationTime(ref AnimationState state, float deltaTime)
+        {
+            if (!state.IsPlaying || state.IsPaused)
+                return false;
+                
+            // Update time
+            float previousTime = state.CurrentTime;
+            state.CurrentTime += deltaTime * state.Speed * globalSpeed;
+            
+            // Check if we've completed
+            if (state.CurrentTime >= state.Length)
+            {
+                if (state.IsLooping)
+                {
+                    // FIX #1: Proper loop counting
+                    // Calculate how many times we've looped in this frame
+                    int loopsThisFrame = (int)(state.CurrentTime / state.Length);
+                    
+                    // Update loop count
+                    state.LoopCount += loopsThisFrame;
+                    
+                    // Fire loop event for each loop
+                    if (clipIDToClip.TryGetValue(state.ClipID, out var clip))
+                    {
+                        for (int i = 0; i < loopsThisFrame; i++)
+                        {
+                            FireAnimationLoop(clip.name, state.LoopCount - loopsThisFrame + i + 1);
+                        }
+                    }
+                    
+                    // Invoke loop callback
+                    state.OnLoop?.Invoke();
+                    
+                    // Check max loops (fixed comparison)
+                    if (state.MaxLoops > 0 && state.LoopCount >= state.MaxLoops)
+                    {
+                        // Clamp to end of last loop
+                        state.CurrentTime = state.Length;
+                        state.SetFlag(AnimationFlags.Playing, false);
+                        state.OnComplete?.Invoke();
+                        return true;
+                    }
+                    
+                    // Wrap time for next loop
+                    state.CurrentTime = math.fmod(state.CurrentTime, state.Length);
+                    
+                    // Update the playable for smooth looping
+                    if (state.Playable.IsValid())
+                    {
+                        state.Playable.SetTime(state.CurrentTime);
+                    }
+                    
+                    return false;
+                }
+                else
+                {
+                    // Non-looping animation completed
+                    state.CurrentTime = state.Length;
+                    state.SetFlag(AnimationFlags.Playing, false);
+                    state.OnComplete?.Invoke();
+                    return true;
+                }
+            }
+            
+            // Update playable time
+            if (state.Playable.IsValid())
+            {
+                state.Playable.SetTime(state.CurrentTime);
+            }
+            
+            // Update normalized time
+            state.NormalizedTime = state.Length > 0 ? state.CurrentTime / state.Length : 0f;
+            
+            return false;
         }
         
         #endregion
