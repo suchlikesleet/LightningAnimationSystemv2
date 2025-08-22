@@ -477,6 +477,7 @@ namespace LightningAnimation
                 if (state.IsFadingIn || state.IsFadingOut)
                 {
                     state.UpdateWeight(deltaTime);
+                    
                     if (state.Playable.IsValid())
                     {
                         mixerPlayable.SetInputWeight(state.PlayableIndex, state.Weight);

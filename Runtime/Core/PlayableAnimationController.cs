@@ -411,11 +411,11 @@ namespace LightningAnimation
                 mixerPlayable.SetInputWeight(slot, 0f);
             }
             
-            // FIX #1 & #2: Return playable to pool instead of destroying
-            if (state.Playable.IsValid() && state.ClipID != 0)
-            {
-                playablePool.Return(state.Playable, state.ClipID);
-            }
+            // Destroy the playable to avoid latching state after it’s removed from the mixer.
+               if (state.Playable.IsValid())
+                    {
+                        state.Playable.Destroy();
+                    }
             
             // Clear state
             state.Reset();

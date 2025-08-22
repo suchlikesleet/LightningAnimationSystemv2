@@ -274,7 +274,7 @@ namespace LightningAnimation
         /// </summary>
         public bool IsAnyPlaying()
         {
-            return activeStateCount > 0;
+            return ActiveAnimationCount > 0;
         }
         
         #endregion
@@ -286,26 +286,23 @@ namespace LightningAnimation
         /// </summary>
         public AnimationHandle[] GetActiveHandles()
         {
-            var handles = new AnimationHandle[activeStateCount];
-            int index = 0;
-            
-            for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
-            {
-                if (states[i].IsPlaying)
-                {
-                    handles[index++] = new AnimationHandle(
-                        i,
-                        states[i].Version,
-                        states[i].ClipID,
-                        this
-                    );
-                    
-                    if (index >= activeStateCount)
-                        break;
-                }
+            // Count active states on the fly (avoids using the stale activeStateCount field)
+               int count = 0;
+               for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
+                   {
+                       if (states[i].IsPlaying && states[i].Playable.IsValid())
+                                count++;
             }
-            
-            return handles;
+               var handles = new AnimationHandle[count];
+                int index = 0;
+               for (int i = 0; i < AnimationConstants.MAX_SLOTS; i++)
+                   {
+                       if (states[i].IsPlaying && states[i].Playable.IsValid())
+                           {
+                                handles[index++] = new AnimationHandle(i, states[i].Version, states[i].ClipID, this);
+                            }
+                    }
+                return handles;
         }
         
         /// <summary>
