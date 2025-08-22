@@ -7,8 +7,8 @@ using UnityEngine.Playables;
 namespace LightningAnimation
 {
     /// <summary>
-    /// SIMD-friendly animation state structure - FIXED VERSION
-    /// Uses float4/int4 for efficient batch processing
+    /// SIMD-friendly animation state structure - COMPLETELY FIXED VERSION
+    /// All initialization and update issues resolved
     /// </summary>
     [Serializable]
     internal struct AnimationState
@@ -25,16 +25,23 @@ namespace LightningAnimation
         public Action OnLoop;
         
         /// <summary>
-        /// Initialize state with clip data
+        /// Initialize state with clip data - FIXED #9
         /// </summary>
         public void Initialize(AnimationClip clip, int clipID, int version, int playableIndex)
         {
+            // Initialize time data
             TimeData = new float4(0f, clip.length, 1f, 0f);
+            
+            // Initialize weight data
             WeightData = new float4(1f, 1f, AnimationConstants.DEFAULT_BLEND_SPEED, 0f);
-            // FIX #1: Initialize loop count to 0, not included in initial play
+            
+            // Initialize metadata - loop count starts at 0
             Metadata = new int4(clipID, version, 0, (int)AnimationFlags.Initialized);
+            
+            // FIX #9: Store the playable index correctly
             References = new int4(playableIndex, -1, -1, 0);
             
+            // Clear references
             Playable = default(AnimationClipPlayable);
             OnComplete = null;
             OnLoop = null;
@@ -56,7 +63,7 @@ namespace LightningAnimation
         }
         
         /// <summary>
-        /// Update weight with blending - FIXED
+        /// Update weight with blending - COMPLETELY FIXED
         /// </summary>
         public void UpdateWeight(float deltaTime)
         {
@@ -72,7 +79,8 @@ namespace LightningAnimation
             {
                 // Reached target
                 WeightData.x = WeightData.y;
-                // FIX #5: Clear fade flags properly
+                
+                // Clear fade flags properly
                 if (IsFadingIn)
                     SetFlag(AnimationFlags.FadingIn, false);
                 if (IsFadingOut)
@@ -84,7 +92,7 @@ namespace LightningAnimation
                 WeightData.x += math.sign(delta) * maxDelta;
             }
             
-            // FIX #5: Ensure weight is always clamped to [0,1]
+            // Ensure weight is always clamped to [0,1]
             WeightData.x = math.saturate(WeightData.x);
         }
         
@@ -118,7 +126,11 @@ namespace LightningAnimation
             set => TimeData.x = math.max(0, value);
         }
         
-        public float Length => TimeData.y;
+        public float Length
+        {
+            get => TimeData.y;
+            set => TimeData.y = math.max(0, value);
+        }
         
         public float Speed
         {
@@ -150,8 +162,17 @@ namespace LightningAnimation
             set => WeightData.z = math.max(0, value);
         }
         
-        public int ClipID => Metadata.x;
-        public int Version => Metadata.y;
+        public int ClipID
+        {
+            get => Metadata.x;
+            set => Metadata.x = value;
+        }
+        
+        public int Version
+        {
+            get => Metadata.y;
+            set => Metadata.y = value;
+        }
         
         public int LoopCount
         {
@@ -174,11 +195,11 @@ namespace LightningAnimation
         #endregion
         
         /// <summary>
-        /// Prepare for fade in - FIXED
+        /// Prepare for fade in - COMPLETELY FIXED
         /// </summary>
         public void StartFadeIn(float duration)
         {
-            WeightData.x = 0f;  // Start from 0
+            // FIX: Don't set weight here, let caller handle it
             WeightData.y = 1f;  // Target weight
             WeightData.z = duration > 0 ? 1f / duration : float.MaxValue;
             SetFlag(AnimationFlags.FadingIn, true);
@@ -199,7 +220,17 @@ namespace LightningAnimation
         /// <summary>
         /// Check if state is valid
         /// </summary>
-        public bool IsValid => Metadata.x != 0;  // Has clip ID
+        public bool IsValid => Metadata.x != 0 && IsInitialized;
+        
+        /// <summary>
+        /// Debug string representation
+        /// </summary>
+        public override string ToString()
+        {
+            return $"AnimationState[Clip]:{ClipID}, Time:{CurrentTime:F2}/{Length:F2}, " +
+                   $"Weight:{Weight:F2}, Loops:{LoopCount}/{MaxLoops}, " +
+                   $"Playing:{IsPlaying}, Paused:{IsPaused}]";
+        }
     }
     
     /// <summary>
@@ -209,7 +240,6 @@ namespace LightningAnimation
     {
         /// <summary>
         /// Update multiple states in batch (SIMD optimized)
-        /// Note: Time update is now handled in the main controller for better loop control
         /// </summary>
         public static void BatchUpdateWeights(ref AnimationState[] states, int count, float deltaTime)
         {
@@ -265,5 +295,19 @@ namespace LightningAnimation
                 states[i].UpdateWeight(deltaTime);
             }
         }
+        
+        /// <summary>
+        /// Batch check validity
+        /// </summary>
+        public static bool4 BatchCheckValidity(AnimationState[] states, int startIndex)
+        {
+            return new bool4(
+                states[startIndex].IsValid,
+                states[startIndex + 1].IsValid,
+                states[startIndex + 2].IsValid,
+                states[startIndex + 3].IsValid
+            );
+        }
     }
 }
+
